@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/gdamore/tcell/v2"
@@ -50,6 +51,7 @@ type AppState struct {
 	CursorPosition int
 	CurrentBlame   *Blame
 	ShaHistory     []string
+	SearchTerm     string
 }
 
 func HighlightCell(cell *tview.TableCell) {
@@ -60,7 +62,7 @@ func UnhighlighCell(cell *tview.TableCell) {
 	cell.SetTextColor(tcell.ColorDefault).SetBackgroundColor(tcell.ColorDefault)
 }
 
-func populateContent(table *tview.Table, bottomBar *tview.TextView, state *AppState) error {
+func populateContent(table *tview.Table, state *AppState) error {
 	blame, err := FindBlame(state)
 	if err != nil {
 		return err
@@ -80,12 +82,11 @@ func populateContent(table *tview.Table, bottomBar *tview.TextView, state *AppSt
 		table.SetCell(i, 2, tview.NewTableCell(strconv.Itoa(i+1)))
 		table.SetCell(i, 3, tview.NewTableCell(line))
 	}
-	if len(state.CurrentBlame.Lines) <= state.CursorPosition {
-		state.CursorPosition = len(state.CurrentBlame.Lines) - 1
+	newPos := state.CursorPosition
+	if len(state.CurrentBlame.Lines) <= newPos {
+		newPos = len(state.CurrentBlame.Lines) - 1
 	}
-	table.Select(state.CursorPosition, 0)
-	HighlightCell(table.GetCell(state.CursorPosition, 2))
-	HighlightCell(table.GetCell(state.CursorPosition, 3))
+	table.Select(newPos, 0)
 	return nil
 }
 
@@ -101,9 +102,32 @@ func setMessage(bottomBar *tview.TextView, message string) {
 		SetBackgroundColor(tcell.ColorDefault)
 }
 
+func performSearch(state *AppState, table *tview.Table, reverse bool) bool {
+	linesLen := len(state.CurrentBlame.Lines)
+	cursorPos := state.CursorPosition
+	for i := 1; i < linesLen; i++ {
+		var p int
+		if reverse {
+			p = cursorPos - i
+			if p < 0 {
+				p += linesLen
+			}
+		} else {
+			p = (cursorPos + i) % linesLen
+		}
+		line := state.CurrentBlame.Lines[p]
+		if strings.Contains(line, state.SearchTerm) {
+			table.Select(p, 0)
+			return true
+		}
+	}
+	return false
+}
+
 func initializeTView(tApp *tview.Application, state *AppState) error {
 	table := tview.NewTable()
 	bottomBar := tview.NewTextView()
+	searchBar := tview.NewInputField()
 
 	grid := tview.
 		NewGrid().
@@ -111,26 +135,55 @@ func initializeTView(tApp *tview.Application, state *AppState) error {
 		AddItem(table, 0, 0, 1, 1, 0, 0, true).
 		AddItem(bottomBar, 1, 0, 1, 1, 0, 0, false)
 
-	table.SetSelectable(true, false).SetEvaluateAllRows(true)
+	table.
+		SetSelectable(true, false).
+		SetEvaluateAllRows(true).
+		SetSelectionChangedFunc(func(row, _ int) {
+			UnhighlighCell(table.GetCell(state.CursorPosition, 2))
+			UnhighlighCell(table.GetCell(state.CursorPosition, 3))
+			state.CursorPosition = row
 
-	err := populateContent(table, bottomBar, state)
+			c := state.CurrentBlame.LineChunkMap[row]
+			setMessage(bottomBar, c.Previous)
+			HighlightCell(table.GetCell(row, 2))
+			HighlightCell(table.GetCell(row, 3))
+		})
+
+	searchBar.
+		SetFieldBackgroundColor(tcell.ColorDefault).
+		SetFieldTextColor(tcell.ColorDefault).
+		SetPlaceholder("type to search...").
+		SetDoneFunc(func(key tcell.Key) {
+			tApp.SetFocus(table)
+			grid.RemoveItem(searchBar)
+			grid.AddItem(bottomBar, 1, 0, 1, 1, 0, 0, false)
+			setMessage(bottomBar, fmt.Sprintf("%s", key))
+			searchTerm := searchBar.GetText()
+			if searchTerm != "" && key == 13 { // enter key
+				state.SearchTerm = strings.TrimSpace(searchTerm)
+				performSearch(state, table, false)
+			}
+			searchBar.SetText("")
+		})
+
+	err := populateContent(table, state)
 	if err != nil {
 		return err
 	}
 
-	table.SetSelectionChangedFunc(func(row, _ int) {
-		UnhighlighCell(table.GetCell(state.CursorPosition, 2))
-		UnhighlighCell(table.GetCell(state.CursorPosition, 3))
-		state.CursorPosition = row
-
-		c := state.CurrentBlame.LineChunkMap[row]
-		setMessage(bottomBar, c.Previous)
-		HighlightCell(table.GetCell(row, 2))
-		HighlightCell(table.GetCell(row, 3))
-	})
-
 	tApp.SetRoot(grid, true)
 	tApp.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		r := event.Rune()
+		if r == 47 { // forward slash key
+			grid.RemoveItem(bottomBar)
+			grid.AddItem(searchBar, 1, 0, 1, 1, 0, 0, false)
+			tApp.SetFocus(searchBar)
+			return nil
+		}
+		return event
+	})
+
+	table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		r := event.Rune()
 		if r == 113 { // q key
 			tApp.Stop()
@@ -143,7 +196,7 @@ func initializeTView(tApp *tview.Application, state *AppState) error {
 			}
 			state.CurrentSha = c.Previous
 			state.ShaHistory = append(state.ShaHistory, c.Previous)
-			err := populateContent(table, bottomBar, state)
+			err := populateContent(table, state)
 			if err != nil {
 				setErrorMessage(bottomBar, fmt.Sprintf("%s", err))
 			}
@@ -162,11 +215,15 @@ func initializeTView(tApp *tview.Application, state *AppState) error {
 			} else {
 				state.CurrentSha = state.ShaHistory[historyLen-1]
 			}
-			err := populateContent(table, bottomBar, state)
+			err := populateContent(table, state)
 			if err != nil {
 				setErrorMessage(bottomBar, fmt.Sprintf("%s", err))
 			}
 			return nil
+		} else if state.SearchTerm != "" && (r == 78 || r == 110) { // n or N (shift+n) key
+			reverse := r == 78
+			performSearch(state, table, reverse)
+			return event
 		}
 		return event
 	})
