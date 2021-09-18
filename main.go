@@ -21,7 +21,8 @@ const (
 )
 
 const (
-	LineLinkCommand = "ll"
+	LineLinkCommand   = "ll"
+	CommitLinkCommand = "cl"
 )
 
 type AppState struct {
@@ -34,6 +35,7 @@ type AppState struct {
 	CurrentBlame   *Blame
 	ShaHistory     []string
 	SearchTerm     string
+	RemoteInfo     *RemoteInfo
 }
 
 func checkIfFile(path string) (bool, error) {
@@ -134,19 +136,31 @@ func performSearch(state *AppState, table *tview.Table, reverse bool) bool {
 	return false
 }
 
-func constructLink(remoteUrl *RemoteURL, sha, path string, lineNumber int) (string, error) {
-	if remoteUrl.Host == "github.com" {
+func buildLineLink(ri *RemoteInfo, sha, path string, lineNumber int) (string, error) {
+	if ri.Host == "github.com" {
 		fullUrl := fmt.Sprintf(
-			"https://%s/%s/blob/%s/%s#L%d",
-			"github.com",
-			remoteUrl.Repo,
+			"https://github.com/%s/blob/%s/%s#L%d",
+			ri.Repo,
 			sha,
 			path,
 			lineNumber,
 		)
 		return fullUrl, nil
 	} else {
-		return "", fmt.Errorf("Cannot construct link for remote %s", remoteUrl.Host)
+		return "", fmt.Errorf("Cannot construct link for remote %s", ri.Host)
+	}
+}
+
+func buildCommitLink(ri *RemoteInfo, sha string) (string, error) {
+	if ri.Host == "github.com" {
+		fullUrl := fmt.Sprintf(
+			"https://github.com/%s/commit/%s",
+			ri.Repo,
+			sha,
+		)
+		return fullUrl, nil
+	} else {
+		return "", fmt.Errorf("Cannot construct link for remote %s", ri.Host)
 	}
 }
 
@@ -156,17 +170,27 @@ func handleCommand(command string, state *AppState) (string, error) {
 		if sha == NotCommittedId {
 			return "", fmt.Errorf("Cannot produce a remote link for the selected line because it's not committed")
 		}
-		remoteUrl, err := FindRemoteUrl(state)
+		ri, err := FindRemoteUrl(state)
 		if err != nil {
 			return "", err
 		}
 		path := strings.Trim(strings.Replace(state.Filepath, state.RepoPath, "", 1), "/")
-		return constructLink(
-			remoteUrl,
+		return buildLineLink(
+			ri,
 			sha,
 			path,
 			state.CursorPosition+1,
 		)
+	} else if command == CommitLinkCommand {
+		sha := state.CurrentBlame.LineChunkMap[state.CursorPosition].CommitSha
+		if sha == NotCommittedId {
+			return "", fmt.Errorf("Cannot produce a remote link for the selected line because it's not committed")
+		}
+		ri, err := FindRemoteUrl(state)
+		if err != nil {
+			return "", err
+		}
+		return buildCommitLink(ri, sha)
 	} else {
 		return "", fmt.Errorf("Unknown command: %s", command)
 	}
@@ -244,12 +268,12 @@ func initializeTView(tApp *tview.Application, state *AppState) error {
 				if r == 47 {
 					if inputBarMode != SearchInputMode {
 						inputBarMode = SearchInputMode
-						inputBar.SetLabel("/").SetText("")
+						inputBar.SetLabel("/")
 					}
 				} else if r == 58 {
 					if inputBarMode != CommandInputMode {
 						inputBarMode = CommandInputMode
-						inputBar.SetLabel(":").SetText("")
+						inputBar.SetLabel(":")
 					}
 				}
 				grid.RemoveItem(bottomBar)
@@ -285,7 +309,9 @@ func initializeTView(tApp *tview.Application, state *AppState) error {
 					}
 				} else {
 					setErrorMessage(bottomBar, fmt.Sprintf("Unknown input mode %d", inputBarMode))
+					return
 				}
+				inputBar.SetText("")
 			}
 		})
 

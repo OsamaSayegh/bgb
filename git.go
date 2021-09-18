@@ -32,7 +32,7 @@ type BlameChunk struct {
 	Summary    string
 }
 
-type RemoteURL struct {
+type RemoteInfo struct {
 	Host string
 	Repo string
 }
@@ -165,7 +165,10 @@ func FindBlame(state *AppState) (b *Blame, err error) {
 	return b, nil
 }
 
-func FindRemoteUrl(state *AppState) (*RemoteURL, error) {
+func FindRemoteUrl(state *AppState) (*RemoteInfo, error) {
+	if state.RemoteInfo != nil {
+		return state.RemoteInfo, nil
+	}
 	cmd := exec.CommandContext(
 		state.Ctx,
 		state.GitBin,
@@ -182,10 +185,15 @@ func FindRemoteUrl(state *AppState) (*RemoteURL, error) {
 		return nil, fmt.Errorf("error while executing git command: %s", strings.TrimSpace(stderr.String()))
 	}
 	raw := strings.TrimSpace(stdout.String())
-	return parseRemoteUrl(raw)
+	ri, err := parseRemoteUrl(raw)
+	if err != nil {
+		return nil, err
+	}
+	state.RemoteInfo = ri
+	return ri, nil
 }
 
-func parseRemoteUrl(raw string) (*RemoteURL, error) {
+func parseRemoteUrl(raw string) (*RemoteInfo, error) {
 	if strings.HasSuffix(raw, ".git") {
 		raw = raw[:len(raw)-4]
 	}
@@ -203,7 +211,7 @@ func parseRemoteUrl(raw string) (*RemoteURL, error) {
 		host = u.Host
 		repo = u.Path
 	}
-	return &RemoteURL{Host: strings.Trim(host, "/"), Repo: strings.Trim(repo, "/")}, nil
+	return &RemoteInfo{Host: strings.Trim(host, "/"), Repo: strings.Trim(repo, "/")}, nil
 }
 
 func FindInterestingValue(name string, line string) (string, bool) {
