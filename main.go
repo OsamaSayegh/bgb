@@ -15,6 +15,27 @@ import (
 	"github.com/rivo/tview"
 )
 
+const (
+	SearchInputMode  = 1
+	CommandInputMode = 2
+)
+
+const (
+	LineLinkCommand = "ll"
+)
+
+type AppState struct {
+	Ctx            context.Context
+	GitBin         string
+	Filepath       string
+	RepoPath       string
+	CurrentSha     string
+	CursorPosition int
+	CurrentBlame   *Blame
+	ShaHistory     []string
+	SearchTerm     string
+}
+
 func checkIfFile(path string) (bool, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -37,21 +58,9 @@ func getFilepath() (string, error) {
 		return "", fmt.Errorf("bgb: %s", err)
 	}
 	if !isFile {
-		return "", fmt.Errorf("bgb: the given path is not a file.")
+		return "", fmt.Errorf("bgb: the given %#v path is not a file.", os.Args[1])
 	}
 	return fp, nil
-}
-
-type AppState struct {
-	Ctx            context.Context
-	GitBin         string
-	Filepath       string
-	RepoPath       string
-	CurrentSha     string
-	CursorPosition int
-	CurrentBlame   *Blame
-	ShaHistory     []string
-	SearchTerm     string
 }
 
 func HighlightCell(cell *tview.TableCell) {
@@ -72,15 +81,16 @@ func populateContent(table *tview.Table, state *AppState) error {
 	for i, line := range state.CurrentBlame.Lines {
 		c := state.CurrentBlame.LineChunkMap[i]
 		sha := "-------"
-		summary := "(Not committed)"
+		summary := "(not committed)"
 		if c.CommitSha != NotCommittedId {
 			sha = c.CommitSha[:7]
 			summary = firstN(c.Summary, 40)
 		}
 		table.SetCell(i, 0, tview.NewTableCell(sha).SetTextColor(tcell.ColorYellow).SetSelectable(false))
-		table.SetCell(i, 1, tview.NewTableCell(summary).SetSelectable(false))
+		table.SetCell(i, 1, tview.NewTableCell(tview.Escape(summary)).SetSelectable(false))
 		table.SetCell(i, 2, tview.NewTableCell(strconv.Itoa(i+1)))
-		table.SetCell(i, 3, tview.NewTableCell(line))
+		// tview has a bug where tabs in strings are completely stripped :(
+		table.SetCell(i, 3, tview.NewTableCell(tview.Escape(strings.ReplaceAll(line, "\t", "    "))))
 	}
 	newPos := state.CursorPosition
 	if len(state.CurrentBlame.Lines) <= newPos {
@@ -124,10 +134,51 @@ func performSearch(state *AppState, table *tview.Table, reverse bool) bool {
 	return false
 }
 
+func constructLink(remoteUrl *RemoteURL, sha, path string, lineNumber int) (string, error) {
+	if remoteUrl.Host == "github.com" {
+		fullUrl := fmt.Sprintf(
+			"https://%s/%s/blob/%s/%s#L%d",
+			"github.com",
+			remoteUrl.Repo,
+			sha,
+			path,
+			lineNumber,
+		)
+		return fullUrl, nil
+	} else {
+		return "", fmt.Errorf("Cannot construct link for remote %s", remoteUrl.Host)
+	}
+}
+
+func handleCommand(command string, state *AppState) (string, error) {
+	if command == LineLinkCommand {
+		sha := state.CurrentBlame.LineChunkMap[state.CursorPosition].CommitSha
+		if sha == NotCommittedId {
+			return "", fmt.Errorf("Cannot produce a remote link for the selected line because it's not committed")
+		}
+		remoteUrl, err := FindRemoteUrl(state)
+		if err != nil {
+			return "", err
+		}
+		path := strings.Trim(strings.Replace(state.Filepath, state.RepoPath, "", 1), "/")
+		return constructLink(
+			remoteUrl,
+			sha,
+			path,
+			state.CursorPosition+1,
+		)
+	} else {
+		return "", fmt.Errorf("Unknown command: %s", command)
+	}
+}
+
 func initializeTView(tApp *tview.Application, state *AppState) error {
+	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
+	tview.Styles.PrimaryTextColor = tcell.ColorDefault
 	table := tview.NewTable()
 	bottomBar := tview.NewTextView()
-	searchBar := tview.NewInputField()
+	inputBar := tview.NewInputField()
+	var inputBarMode int
 
 	grid := tview.
 		NewGrid().
@@ -147,23 +198,95 @@ func initializeTView(tApp *tview.Application, state *AppState) error {
 			setMessage(bottomBar, c.Previous)
 			HighlightCell(table.GetCell(row, 2))
 			HighlightCell(table.GetCell(row, 3))
+		}).
+		SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+			r := event.Rune()
+			if r == 113 { // q key
+				tApp.Stop()
+				return nil
+			} else if r == 104 { // h key
+				c := state.CurrentBlame.LineChunkMap[state.CursorPosition]
+				if c.Previous == "" {
+					setErrorMessage(bottomBar, fmt.Sprintf("Can't go back because %s is the commit that added this file.", firstN(c.CommitSha, 7)))
+					return nil
+				}
+				state.CurrentSha = c.Previous
+				state.ShaHistory = append(state.ShaHistory, c.Previous)
+				err := populateContent(table, state)
+				if err != nil {
+					setErrorMessage(bottomBar, fmt.Sprintf("%s", err))
+				}
+				return nil
+			} else if r == 108 { // l key
+				historyLen := len(state.ShaHistory)
+				if historyLen == 0 {
+					setErrorMessage(bottomBar, "You are on the latest revision of this file.")
+					return nil
+				}
+				state.ShaHistory[historyLen-1] = ""
+				state.ShaHistory = state.ShaHistory[:historyLen-1]
+				historyLen--
+				if historyLen == 0 {
+					state.CurrentSha = ""
+				} else {
+					state.CurrentSha = state.ShaHistory[historyLen-1]
+				}
+				err := populateContent(table, state)
+				if err != nil {
+					setErrorMessage(bottomBar, fmt.Sprintf("%s", err))
+				}
+				return nil
+			} else if state.SearchTerm != "" && (r == 78 || r == 110) { // n or N (shift+n) key
+				reverse := r == 78
+				performSearch(state, table, reverse)
+				return event
+			} else if r == 47 || r == 58 { // forward slash key or colon (shift+;) key
+				if r == 47 {
+					if inputBarMode != SearchInputMode {
+						inputBarMode = SearchInputMode
+						inputBar.SetLabel("/").SetText("")
+					}
+				} else if r == 58 {
+					if inputBarMode != CommandInputMode {
+						inputBarMode = CommandInputMode
+						inputBar.SetLabel(":").SetText("")
+					}
+				}
+				grid.RemoveItem(bottomBar)
+				grid.AddItem(inputBar, 1, 0, 1, 1, 0, 0, false)
+				tApp.SetFocus(inputBar)
+				return nil
+			}
+			return event
 		})
 
-	searchBar.
+	inputBar.
 		SetFieldBackgroundColor(tcell.ColorDefault).
 		SetFieldTextColor(tcell.ColorDefault).
-		SetPlaceholder("type to search...").
+		SetLabelColor(tcell.ColorDefault).
 		SetDoneFunc(func(key tcell.Key) {
 			tApp.SetFocus(table)
-			grid.RemoveItem(searchBar)
+			grid.RemoveItem(inputBar)
 			grid.AddItem(bottomBar, 1, 0, 1, 1, 0, 0, false)
-			setMessage(bottomBar, fmt.Sprintf("%s", key))
-			searchTerm := searchBar.GetText()
-			if searchTerm != "" && key == 13 { // enter key
-				state.SearchTerm = strings.TrimSpace(searchTerm)
-				performSearch(state, table, false)
+			inputContent := inputBar.GetText()
+			if inputContent != "" && key == 13 { // enter key
+				if inputBarMode == SearchInputMode {
+					state.SearchTerm = strings.TrimSpace(inputContent)
+					foundResults := performSearch(state, table, false)
+					if !foundResults {
+						setErrorMessage(bottomBar, fmt.Sprintf("Pattern not found: %s", state.SearchTerm))
+					}
+				} else if inputBarMode == CommandInputMode {
+					results, commandErr := handleCommand(inputContent, state)
+					if commandErr != nil {
+						setErrorMessage(bottomBar, fmt.Sprintf("%s", commandErr))
+					} else {
+						setMessage(bottomBar, results)
+					}
+				} else {
+					setErrorMessage(bottomBar, fmt.Sprintf("Unknown input mode %d", inputBarMode))
+				}
 			}
-			searchBar.SetText("")
 		})
 
 	err := populateContent(table, state)
@@ -172,61 +295,6 @@ func initializeTView(tApp *tview.Application, state *AppState) error {
 	}
 
 	tApp.SetRoot(grid, true)
-	tApp.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		r := event.Rune()
-		if r == 47 { // forward slash key
-			grid.RemoveItem(bottomBar)
-			grid.AddItem(searchBar, 1, 0, 1, 1, 0, 0, false)
-			tApp.SetFocus(searchBar)
-			return nil
-		}
-		return event
-	})
-
-	table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		r := event.Rune()
-		if r == 113 { // q key
-			tApp.Stop()
-			return nil
-		} else if r == 104 { // h key
-			c := state.CurrentBlame.LineChunkMap[state.CursorPosition]
-			if c.Previous == "" {
-				setErrorMessage(bottomBar, fmt.Sprintf("Can't go back because %s is the commit that added this file.", firstN(c.CommitSha, 7)))
-				return nil
-			}
-			state.CurrentSha = c.Previous
-			state.ShaHistory = append(state.ShaHistory, c.Previous)
-			err := populateContent(table, state)
-			if err != nil {
-				setErrorMessage(bottomBar, fmt.Sprintf("%s", err))
-			}
-			return nil
-		} else if r == 108 { // l key
-			historyLen := len(state.ShaHistory)
-			if historyLen == 0 {
-				setErrorMessage(bottomBar, "You are on the latest revision of this file.")
-				return nil
-			}
-			state.ShaHistory[historyLen-1] = ""
-			state.ShaHistory = state.ShaHistory[:historyLen-1]
-			historyLen--
-			if historyLen == 0 {
-				state.CurrentSha = ""
-			} else {
-				state.CurrentSha = state.ShaHistory[historyLen-1]
-			}
-			err := populateContent(table, state)
-			if err != nil {
-				setErrorMessage(bottomBar, fmt.Sprintf("%s", err))
-			}
-			return nil
-		} else if state.SearchTerm != "" && (r == 78 || r == 110) { // n or N (shift+n) key
-			reverse := r == 78
-			performSearch(state, table, reverse)
-			return event
-		}
-		return event
-	})
 	err = tApp.Run()
 	return err
 }
@@ -244,7 +312,6 @@ func run() int {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var _ = cancel
 
 	repo, err := FindRepoFromPath(ctx, gitBin, filepath.Dir(fp))
 	if err != nil {
@@ -267,9 +334,8 @@ func run() int {
 	go func() {
 		<-signals
 		tApp.Stop()
+		cancel()
 	}()
-	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
-	tview.Styles.PrimaryTextColor = tcell.ColorDefault
 	if err = initializeTView(tApp, &state); err != nil {
 		fmt.Printf("%s\n", err)
 		return 1

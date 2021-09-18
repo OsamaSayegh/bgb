@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -29,6 +30,11 @@ type BlameChunk struct {
 	Author     string
 	AuthorMail string
 	Summary    string
+}
+
+type RemoteURL struct {
+	Host string
+	Repo string
 }
 
 type Blame struct {
@@ -157,6 +163,47 @@ func FindBlame(state *AppState) (b *Blame, err error) {
 
 	b = &Blame{Lines: lines, LineChunkMap: lineChunkMap}
 	return b, nil
+}
+
+func FindRemoteUrl(state *AppState) (*RemoteURL, error) {
+	cmd := exec.CommandContext(
+		state.Ctx,
+		state.GitBin,
+		"-C",
+		state.RepoPath,
+		"ls-remote",
+		"--get-url",
+	)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("error while executing git command: %s", strings.TrimSpace(stderr.String()))
+	}
+	raw := strings.TrimSpace(stdout.String())
+	return parseRemoteUrl(raw)
+}
+
+func parseRemoteUrl(raw string) (*RemoteURL, error) {
+	if strings.HasSuffix(raw, ".git") {
+		raw = raw[:len(raw)-4]
+	}
+	var host, repo string
+	if strings.HasPrefix(raw, "git@") {
+		raw = strings.Replace(raw, "git@", "", 1)
+		hostAndRepoSlice := strings.SplitN(raw, ":", 2)
+		host = hostAndRepoSlice[0]
+		repo = hostAndRepoSlice[1]
+	} else {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return nil, err
+		}
+		host = u.Host
+		repo = u.Path
+	}
+	return &RemoteURL{Host: strings.Trim(host, "/"), Repo: strings.Trim(repo, "/")}, nil
 }
 
 func FindInterestingValue(name string, line string) (string, bool) {
