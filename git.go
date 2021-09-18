@@ -165,7 +165,7 @@ func FindBlame(state *AppState) (b *Blame, err error) {
 	return b, nil
 }
 
-func FindRemoteUrl(state *AppState) (*RemoteInfo, error) {
+func FindRemoteInfo(state *AppState) (*RemoteInfo, error) {
 	if state.RemoteInfo != nil {
 		return state.RemoteInfo, nil
 	}

@@ -170,7 +170,7 @@ func handleCommand(command string, state *AppState) (string, error) {
 		if sha == NotCommittedId {
 			return "", fmt.Errorf("Cannot produce a remote link for the selected line because it's not committed")
 		}
-		ri, err := FindRemoteUrl(state)
+		ri, err := FindRemoteInfo(state)
 		if err != nil {
 			return "", err
 		}
@@ -186,7 +186,7 @@ func handleCommand(command string, state *AppState) (string, error) {
 		if sha == NotCommittedId {
 			return "", fmt.Errorf("Cannot produce a remote link for the selected line because it's not committed")
 		}
-		ri, err := FindRemoteUrl(state)
+		ri, err := FindRemoteInfo(state)
 		if err != nil {
 			return "", err
 		}
