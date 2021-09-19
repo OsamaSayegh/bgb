@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -73,6 +74,32 @@ func UnhighlighCell(cell *tview.TableCell) {
 	cell.SetTextColor(tcell.ColorDefault).SetBackgroundColor(tcell.ColorDefault)
 }
 
+func timeUnitForAmount(amount int64, unit string) string {
+	return fmt.Sprintf("%d%s", amount, unit[0:1])
+	// if amount == 1 {
+	// 	return fmt.Sprintf("%d %s", amount, unit)
+	// } else {
+	// 	return fmt.Sprintf("%d %ss", amount, unit)
+	// }
+}
+
+func TimestampToRelative(timestamp int64) string {
+	diff := time.Now().Unix() - timestamp // in seconds
+	if diff < 60 {
+		return timeUnitForAmount(diff, "second")
+	} else if diff < 3600 {
+		return timeUnitForAmount(diff/60, "minute")
+	} else if diff < 3600*24 {
+		return timeUnitForAmount(diff/3600, "hour")
+	} else if diff < 3600*24*30 {
+		return timeUnitForAmount(diff/3600/24, "day")
+	} else if diff < 3600*24*30*12 {
+		return timeUnitForAmount(diff/3600/24/30, "month")
+	} else {
+		return timeUnitForAmount(diff/3600/24/30/12, "year")
+	}
+}
+
 func populateContent(table *tview.Table, state *AppState) error {
 	blame, err := FindBlame(state)
 	if err != nil {
@@ -82,17 +109,44 @@ func populateContent(table *tview.Table, state *AppState) error {
 	state.CurrentBlame = blame
 	for i, line := range state.CurrentBlame.Lines {
 		c := state.CurrentBlame.LineChunkMap[i]
-		sha := "-------"
+		sha := ""
+		age := ""
 		summary := "(not committed)"
 		if c.CommitSha != NotCommittedId {
 			sha = c.CommitSha[:7]
-			summary = firstN(c.Summary, 40)
+			summary = firstN(c.Summary, 50, true)
+			age = TimestampToRelative(c.AuthorTime)
 		}
-		table.SetCell(i, 0, tview.NewTableCell(sha).SetTextColor(tcell.ColorYellow).SetSelectable(false))
-		table.SetCell(i, 1, tview.NewTableCell(tview.Escape(summary)).SetSelectable(false))
-		table.SetCell(i, 2, tview.NewTableCell(strconv.Itoa(i+1)))
-		// tview has a bug where tabs in strings are completely stripped :(
-		table.SetCell(i, 3, tview.NewTableCell(tview.Escape(strings.ReplaceAll(line, "\t", "    "))))
+		var shaCell, summaryCell, ageCell, lineNoCell, lineCell *tview.TableCell
+		shaCell = tview.
+			NewTableCell(sha).
+			SetTextColor(tcell.ColorYellow).
+			SetSelectable(false)
+
+		summaryCell = tview.
+			NewTableCell(tview.Escape(summary)).
+			SetSelectable(false)
+
+		ageCell = tview.
+			NewTableCell(age).
+			SetTextColor(tcell.ColorAqua).
+			SetSelectable(false)
+
+		lineNoCell = tview.
+			NewTableCell(strconv.Itoa(i + 1)).
+			SetAlign(tview.AlignRight).
+			SetSelectable(true)
+
+		lineCell = tview.
+			// tview has a bug where tabs in strings are completely stripped :(
+			NewTableCell(tview.Escape(strings.ReplaceAll(line, "\t", "    "))).
+			SetSelectable(true)
+
+		table.SetCell(i, 0, shaCell)
+		table.SetCell(i, 1, summaryCell)
+		table.SetCell(i, 2, ageCell)
+		table.SetCell(i, 3, lineNoCell)
+		table.SetCell(i, 4, lineCell)
 	}
 	newPos := state.CursorPosition
 	if len(state.CurrentBlame.Lines) <= newPos {
@@ -214,14 +268,14 @@ func initializeTView(tApp *tview.Application, state *AppState) error {
 		SetSelectable(true, false).
 		SetEvaluateAllRows(true).
 		SetSelectionChangedFunc(func(row, _ int) {
-			UnhighlighCell(table.GetCell(state.CursorPosition, 2))
 			UnhighlighCell(table.GetCell(state.CursorPosition, 3))
+			UnhighlighCell(table.GetCell(state.CursorPosition, 4))
 			state.CursorPosition = row
 
 			c := state.CurrentBlame.LineChunkMap[row]
 			setMessage(bottomBar, c.Previous)
-			HighlightCell(table.GetCell(row, 2))
 			HighlightCell(table.GetCell(row, 3))
+			HighlightCell(table.GetCell(row, 4))
 		}).
 		SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 			r := event.Rune()
@@ -231,7 +285,13 @@ func initializeTView(tApp *tview.Application, state *AppState) error {
 			} else if r == 104 { // h key
 				c := state.CurrentBlame.LineChunkMap[state.CursorPosition]
 				if c.Previous == "" {
-					setErrorMessage(bottomBar, fmt.Sprintf("Can't go back because %s is the commit that added this file.", firstN(c.CommitSha, 7)))
+					setErrorMessage(
+						bottomBar,
+						fmt.Sprintf(
+							"Can't go back because %s is the commit that added this file.",
+							firstN(c.CommitSha, 7, false),
+						),
+					)
 					return nil
 				}
 				state.CurrentSha = c.Previous
@@ -369,11 +429,15 @@ func run() int {
 	return 0
 }
 
-func firstN(s string, n int) string {
+func firstN(s string, n int, ellipsis bool) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n]
+	if ellipsis {
+		return s[:n-3] + "..."
+	} else {
+		return s[:n]
+	}
 }
 
 func main() {

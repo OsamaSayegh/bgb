@@ -18,6 +18,7 @@ var LineInChunkHeader = regexp.MustCompile(`\A[0-9a-f]{40}\s\d+\s(\d+)\z`)
 const (
 	AuthorKey     = "author"
 	AuthorMailKey = "author-mail"
+	AuthorTimeKey = "author-time"
 	PreviousKey   = "previous"
 	SummaryKey    = "summary"
 )
@@ -29,6 +30,7 @@ type BlameChunk struct {
 	Previous   string
 	Author     string
 	AuthorMail string
+	AuthorTime int64
 	Summary    string
 }
 
@@ -151,6 +153,12 @@ func FindBlame(state *AppState) (b *Blame, err error) {
 				chunk.Previous = val[:40]
 			} else if val, ok := FindInterestingValue(SummaryKey, line); ok {
 				chunk.Summary = val
+			} else if val, ok := FindInterestingValue(AuthorTimeKey, line); ok {
+				timestamp, err := strconv.ParseInt(val, 10, 64)
+				if err != nil {
+					return nil, err
+				}
+				chunk.AuthorTime = timestamp
 			}
 		}
 	}
