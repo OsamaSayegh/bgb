@@ -103,7 +103,7 @@ func populateContent(table *tview.Table, state *AppState) error {
 		summary := "(not committed)"
 		if c.CommitSha != NotCommittedId {
 			sha = c.CommitSha[:7]
-			summary = firstN(c.Summary, 50, true)
+			summary = firstN(c.Summary, 45, true)
 			age = TimestampToRelative(c.AuthorTime)
 		}
 		var shaCell, summaryCell, ageCell, lineNoCell, lineCell *tview.TableCell
