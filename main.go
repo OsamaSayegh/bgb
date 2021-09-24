@@ -74,29 +74,18 @@ func UnhighlighCell(cell *tview.TableCell) {
 	cell.SetTextColor(tcell.ColorDefault).SetBackgroundColor(tcell.ColorDefault)
 }
 
-func timeUnitForAmount(amount int64, unit string) string {
-	return fmt.Sprintf("%d%s", amount, unit[0:1])
-	// if amount == 1 {
-	// 	return fmt.Sprintf("%d %s", amount, unit)
-	// } else {
-	// 	return fmt.Sprintf("%d %ss", amount, unit)
-	// }
-}
-
 func TimestampToRelative(timestamp int64) string {
 	diff := time.Now().Unix() - timestamp // in seconds
-	if diff < 60 {
-		return timeUnitForAmount(diff, "second")
-	} else if diff < 3600 {
-		return timeUnitForAmount(diff/60, "minute")
+	if diff < 3600 {
+		return "< 1h"
 	} else if diff < 3600*24 {
-		return timeUnitForAmount(diff/3600, "hour")
+		return fmt.Sprintf("%d%s", diff/3600, "h")
 	} else if diff < 3600*24*30 {
-		return timeUnitForAmount(diff/3600/24, "day")
+		return fmt.Sprintf("%d%s", diff/3600/24, "d")
 	} else if diff < 3600*24*30*12 {
-		return timeUnitForAmount(diff/3600/24/30, "month")
+		return fmt.Sprintf("%d%s", diff/3600/24/30, "m")
 	} else {
-		return timeUnitForAmount(diff/3600/24/30/12, "year")
+		return fmt.Sprintf("%d%s", diff/3600/24/30/12, "y")
 	}
 }
 
