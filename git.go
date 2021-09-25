@@ -63,22 +63,22 @@ func FindRepoFromPath(ctx context.Context, gitBin string, dir string) (string, e
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-func FindBlame(state *AppState) (b *Blame, err error) {
+func FindBlame(app *Application) (b *Blame, err error) {
 	// git -C <repo> blame --porcelain <path> [<sha>]
 	argsCount := 5
-	if state.CurrentSha != "" {
+	if app.CurrentSha != "" {
 		argsCount += 1
 	}
 	args := make([]string, 0, argsCount)
 	args = append(args, "-C")
-	args = append(args, state.RepoPath)
+	args = append(args, app.RepoPath)
 	args = append(args, "blame")
 	args = append(args, "--porcelain")
-	args = append(args, state.Filepath)
-	if state.CurrentSha != "" {
-		args = append(args, state.CurrentSha)
+	args = append(args, app.Filepath)
+	if app.CurrentSha != "" {
+		args = append(args, app.CurrentSha)
 	}
-	cmd := exec.CommandContext(state.Ctx, state.GitBin, args...)
+	cmd := exec.CommandContext(app.Ctx, app.GitBin, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	p, err := cmd.StdoutPipe()
@@ -173,15 +173,15 @@ func FindBlame(state *AppState) (b *Blame, err error) {
 	return b, nil
 }
 
-func FindRemoteInfo(state *AppState) (*RemoteInfo, error) {
-	if state.RemoteInfo != nil {
-		return state.RemoteInfo, nil
+func FindRemoteInfo(app *Application) (*RemoteInfo, error) {
+	if app.RemoteInfo != nil {
+		return app.RemoteInfo, nil
 	}
 	cmd := exec.CommandContext(
-		state.Ctx,
-		state.GitBin,
+		app.Ctx,
+		app.GitBin,
 		"-C",
-		state.RepoPath,
+		app.RepoPath,
 		"ls-remote",
 		"--get-url",
 	)
@@ -197,7 +197,7 @@ func FindRemoteInfo(state *AppState) (*RemoteInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	state.RemoteInfo = ri
+	app.RemoteInfo = ri
 	return ri, nil
 }
 
