@@ -368,6 +368,20 @@ func TViewInit(app *Application) error {
 				ui.Grid.AddItem(ui.InputBar, 1, 0, 1, 1, 0, 0, false)
 				tApp.SetFocus(ui.InputBar)
 				return nil
+			} else if r == 74 { // J (shift+j)
+				newPos := app.CursorPosition + 10
+				if newPos >= len(app.CurrentBlame.Lines) {
+					newPos = len(app.CurrentBlame.Lines) - 1
+				}
+				ui.Table.Select(newPos, 0)
+				return nil
+			} else if r == 75 { // K (shift+k)
+				newPos := app.CursorPosition - 10
+				if newPos < 0 {
+					newPos = 0
+				}
+				ui.Table.Select(newPos, 0)
+				return nil
 			}
 			return event
 		})
