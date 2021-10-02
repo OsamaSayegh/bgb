@@ -31,6 +31,8 @@ const (
 	CommitLinkCommand = "cl"
 )
 
+const Version = "0.0.1"
+
 type Application struct {
 	Ctx            context.Context
 	GitBin         string
@@ -63,10 +65,6 @@ func checkIfFile(path string) (bool, error) {
 }
 
 func getFilepath() (string, error) {
-	argsSize := len(os.Args) - 1
-	if argsSize != 1 {
-		return "", fmt.Errorf("bgb: expected 1 argument, but received %d arguments.", argsSize)
-	}
 	fp, err := filepath.Abs(os.Args[1])
 	if err != nil {
 		return "", fmt.Errorf("bgb: %s", err)
@@ -431,6 +429,18 @@ func TViewInit(app *Application) error {
 }
 
 func run() int {
+	argsSize := len(os.Args) - 1
+	if argsSize != 1 {
+		fmt.Fprintf(os.Stderr, "bgb: expected 1 argument, but received %d arguments.\n", argsSize)
+		fmt.Fprintf(os.Stderr, "Usage: %s <FILE>\n", os.Args[0])
+		return 1
+	}
+
+	if os.Args[1] == "--version" {
+		fmt.Printf("bgb %s\nCopyright (C) 2021 Osama Sayegh\n", Version)
+		return 0
+	}
+
 	fp, err := getFilepath()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
