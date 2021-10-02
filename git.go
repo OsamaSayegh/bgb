@@ -21,17 +21,26 @@ const (
 	AuthorTimeKey = "author-time"
 	PreviousKey   = "previous"
 	SummaryKey    = "summary"
+	FilenameKey   = "filename"
 )
 
 const NotCommittedId = "0000000000000000000000000000000000000000"
 
+type GitCommandArgs struct {
+	Context       context.Context
+	GitBinaryPath string
+	RepoPath      string
+}
+
 type BlameChunk struct {
-	CommitSha  string
-	Previous   string
-	Author     string
-	AuthorMail string
-	AuthorTime int64
-	Summary    string
+	CommitId         string
+	PreviousCommitId string
+	Author           string
+	AuthorMail       string
+	AuthorTime       int64
+	Summary          string
+	Filename         string
+	PreviousFilename string
 }
 
 type RemoteInfo struct {
@@ -40,16 +49,16 @@ type RemoteInfo struct {
 }
 
 type Blame struct {
-	Lines        []string
-	LineChunkMap map[int]*BlameChunk
+	Lines          []string
+	LineToChunkMap map[int]*BlameChunk
 }
 
-func FindRepoFromPath(ctx context.Context, gitBin string, dir string) (string, error) {
+func GitAttemptRepoLookup(gitArgs *GitCommandArgs) (string, error) {
 	cmd := exec.CommandContext(
-		ctx,
-		gitBin,
+		gitArgs.Context,
+		gitArgs.GitBinaryPath,
 		"-C",
-		dir,
+		gitArgs.RepoPath,
 		"rev-parse",
 		"--show-toplevel",
 	)
@@ -63,22 +72,22 @@ func FindRepoFromPath(ctx context.Context, gitBin string, dir string) (string, e
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-func FindBlame(app *Application) (b *Blame, err error) {
-	// git -C <repo> blame --porcelain <path> [<sha>]
+func GitBlame(gitArgs *GitCommandArgs, commitId, filename string) (b *Blame, err error) {
+	// git -C <repo> blame --porcelain <filename> [<commitId>]
 	argsCount := 5
-	if app.CurrentSha != "" {
+	if commitId != "" {
 		argsCount += 1
 	}
 	args := make([]string, 0, argsCount)
 	args = append(args, "-C")
-	args = append(args, app.RepoPath)
+	args = append(args, gitArgs.RepoPath)
 	args = append(args, "blame")
 	args = append(args, "--porcelain")
-	args = append(args, app.Filepath)
-	if app.CurrentSha != "" {
-		args = append(args, app.CurrentSha)
+	args = append(args, filename)
+	if commitId != "" {
+		args = append(args, commitId)
 	}
-	cmd := exec.CommandContext(app.Ctx, app.GitBin, args...)
+	cmd := exec.CommandContext(gitArgs.Context, gitArgs.GitBinaryPath, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	p, err := cmd.StdoutPipe()
@@ -100,8 +109,8 @@ func FindBlame(app *Application) (b *Blame, err error) {
 	}()
 
 	scanner := bufio.NewScanner(p)
-	lineChunkMap := make(map[int]*BlameChunk)
-	shaChunkMap := make(map[string]*BlameChunk)
+	lineToChunkMap := make(map[int]*BlameChunk)
+	idToChunkMap := make(map[string]*BlameChunk)
 	linesInChunk := 0
 	lineNumber := 0
 	chunkPopulated := false
@@ -116,15 +125,15 @@ func FindBlame(app *Application) (b *Blame, err error) {
 				err = fmt.Errorf("unexpected format of line %#v in git blame output.", line)
 				break
 			}
-			sha := matches[1]
-			if shaChunkMap[sha] != nil {
+			id := matches[1]
+			if idToChunkMap[id] != nil {
 				chunkPopulated = true
-				chunk = shaChunkMap[sha]
+				chunk = idToChunkMap[id]
 			} else {
 				chunkPopulated = false
 				chunk = &BlameChunk{}
-				chunk.CommitSha = sha
-				shaChunkMap[sha] = chunk
+				chunk.CommitId = id
+				idToChunkMap[id] = chunk
 			}
 			lineNumber, err = strconv.Atoi(matches[3])
 			linesInChunk, err = strconv.Atoi(matches[4])
@@ -142,7 +151,7 @@ func FindBlame(app *Application) (b *Blame, err error) {
 			lineNumber -= 1
 		} else if strings.HasPrefix(line, "\t") {
 			linesInChunk -= 1
-			lineChunkMap[lineNumber] = chunk
+			lineToChunkMap[lineNumber] = chunk
 			lines = append(lines, strings.Replace(line, "\t", "", 1))
 		} else if !chunkPopulated {
 			if val, ok := FindInterestingValue(AuthorKey, line); ok {
@@ -150,9 +159,12 @@ func FindBlame(app *Application) (b *Blame, err error) {
 			} else if val, ok := FindInterestingValue(AuthorMailKey, line); ok {
 				chunk.AuthorMail = val
 			} else if val, ok := FindInterestingValue(PreviousKey, line); ok {
-				chunk.Previous = val[:40]
+				chunk.PreviousCommitId = val[:40]
+				chunk.PreviousFilename = val[41:]
 			} else if val, ok := FindInterestingValue(SummaryKey, line); ok {
 				chunk.Summary = val
+			} else if val, ok := FindInterestingValue(FilenameKey, line); ok {
+				chunk.Filename = val
 			} else if val, ok := FindInterestingValue(AuthorTimeKey, line); ok {
 				timestamp, err := strconv.ParseInt(val, 10, 64)
 				if err != nil {
@@ -169,19 +181,16 @@ func FindBlame(app *Application) (b *Blame, err error) {
 		return nil, err
 	}
 
-	b = &Blame{Lines: lines, LineChunkMap: lineChunkMap}
+	b = &Blame{Lines: lines, LineToChunkMap: lineToChunkMap}
 	return b, nil
 }
 
-func FindRemoteInfo(app *Application) (*RemoteInfo, error) {
-	if app.RemoteInfo != nil {
-		return app.RemoteInfo, nil
-	}
+func GitFindRemoteInfo(gitArgs *GitCommandArgs) (*RemoteInfo, error) {
 	cmd := exec.CommandContext(
-		app.Ctx,
-		app.GitBin,
+		gitArgs.Context,
+		gitArgs.GitBinaryPath,
 		"-C",
-		app.RepoPath,
+		gitArgs.RepoPath,
 		"ls-remote",
 		"--get-url",
 	)
@@ -197,7 +206,6 @@ func FindRemoteInfo(app *Application) (*RemoteInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	app.RemoteInfo = ri
 	return ri, nil
 }
 

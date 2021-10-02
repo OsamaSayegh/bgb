@@ -23,7 +23,7 @@ const (
 
 const (
 	DisplayMessageLengthLimit = 45
-	DisplayShaLimit           = 7
+	DisplayCommitIdLimit      = 7
 )
 
 const (
@@ -34,18 +34,17 @@ const (
 const Version = "0.0.1"
 
 type Application struct {
-	Ctx            context.Context
-	GitBin         string
-	Filepath       string
-	RepoPath       string
-	CurrentSha     string
-	CursorPosition int
-	CurrentBlame   *Blame
-	ShaHistory     []string
-	SearchTerm     string
-	RemoteInfo     *RemoteInfo
-	TViewApp       *tview.Application
-	Ui             *AppUi
+	Context         context.Context
+	GitBin          string
+	RepoPath        string
+	CurrentCommitId string
+	CursorPosition  int
+	CurrentBlame    *Blame
+	History         []*HistoryItem
+	SearchTerm      string
+	RemoteInfo      *RemoteInfo
+	TViewApp        *tview.Application
+	Ui              *AppUi
 }
 
 type AppUi struct {
@@ -54,6 +53,20 @@ type AppUi struct {
 	BottomBar    *tview.TextView
 	InputBar     *tview.InputField
 	InputBarMode int
+}
+
+type HistoryItem struct {
+	CommitId       string
+	CursorPosition int
+	Filename       string
+}
+
+func (a *Application) CreateGitArgs() *GitCommandArgs {
+	return &GitCommandArgs{
+		Context:       a.Context,
+		GitBinaryPath: a.GitBin,
+		RepoPath:      a.RepoPath,
+	}
 }
 
 func checkIfFile(path string) (bool, error) {
@@ -102,27 +115,23 @@ func TimestampToRelative(timestamp int64) string {
 	}
 }
 
-func populateContent(app *Application) error {
-	blame, err := FindBlame(app)
-	if err != nil {
-		return err
-	}
+func RenderBlameView(app *Application, blame *Blame) {
 	table := app.Ui.Table
 	table.Clear()
-	app.CurrentBlame = blame
-	for i, line := range app.CurrentBlame.Lines {
-		c := app.CurrentBlame.LineChunkMap[i]
-		sha := ""
+	// app.CurrentBlame = blame
+	for i, line := range blame.Lines {
+		c := blame.LineToChunkMap[i]
+		id := ""
 		age := ""
 		summary := "(not committed)"
-		if c.CommitSha != NotCommittedId {
-			sha = c.CommitSha[:DisplayShaLimit]
+		if c.CommitId != NotCommittedId {
+			id = c.CommitId[:DisplayCommitIdLimit]
 			summary = firstN(c.Summary, DisplayMessageLengthLimit, true)
 			age = TimestampToRelative(c.AuthorTime)
 		}
-		var shaCell, summaryCell, ageCell, lineNoCell, lineCell *tview.TableCell
-		shaCell = tview.
-			NewTableCell(sha).
+		var commitIdCell, summaryCell, ageCell, lineNoCell, lineCell *tview.TableCell
+		commitIdCell = tview.
+			NewTableCell(id).
 			SetTextColor(tcell.ColorYellow).
 			SetSelectable(false)
 
@@ -145,18 +154,17 @@ func populateContent(app *Application) error {
 			NewTableCell(tview.Escape(strings.ReplaceAll(line, "\t", "    "))).
 			SetSelectable(true)
 
-		table.SetCell(i, 0, shaCell)
+		table.SetCell(i, 0, commitIdCell)
 		table.SetCell(i, 1, summaryCell)
 		table.SetCell(i, 2, ageCell)
 		table.SetCell(i, 3, lineNoCell)
 		table.SetCell(i, 4, lineCell)
 	}
-	newPos := app.CursorPosition
-	if len(app.CurrentBlame.Lines) <= newPos {
-		newPos = len(app.CurrentBlame.Lines) - 1
-	}
-	table.Select(newPos, 0)
-	return nil
+	// newPos := app.CursorPosition
+	// if len(app.CurrentBlame.Lines) <= newPos {
+	// 	newPos = len(app.CurrentBlame.Lines) - 1
+	// }
+	// table.Select(newPos, 0)
 }
 
 func setErrorMessage(app *Application, message string) {
@@ -193,12 +201,12 @@ func performSearch(app *Application, reverse bool) bool {
 	return false
 }
 
-func buildLineLink(ri *RemoteInfo, sha, path string, lineNumber int) (string, error) {
+func buildLineLink(ri *RemoteInfo, id, path string, lineNumber int) (string, error) {
 	if ri.Host == "github.com" {
 		fullUrl := fmt.Sprintf(
 			"https://github.com/%s/blob/%s/%s#L%d",
 			ri.Repo,
-			sha,
+			id,
 			path,
 			lineNumber,
 		)
@@ -208,12 +216,12 @@ func buildLineLink(ri *RemoteInfo, sha, path string, lineNumber int) (string, er
 	}
 }
 
-func buildCommitLink(ri *RemoteInfo, sha string) (string, error) {
+func buildCommitLink(ri *RemoteInfo, id string) (string, error) {
 	if ri.Host == "github.com" {
 		fullUrl := fmt.Sprintf(
 			"https://github.com/%s/commit/%s",
 			ri.Repo,
-			sha,
+			id,
 		)
 		return fullUrl, nil
 	} else {
@@ -223,37 +231,49 @@ func buildCommitLink(ri *RemoteInfo, sha string) (string, error) {
 
 func handleCommand(app *Application, command string) (string, error) {
 	if command == LineLinkCommand {
-		sha := app.CurrentBlame.LineChunkMap[app.CursorPosition].CommitSha
-		if sha == NotCommittedId {
+		c := app.CurrentBlame.LineToChunkMap[app.CursorPosition]
+		id := c.CommitId
+		if id == NotCommittedId {
 			return "", fmt.Errorf("Cannot produce a remote link for the selected line because it's not committed")
 		}
-		ri, err := FindRemoteInfo(app)
-		if err != nil {
-			return "", err
+		var ri *RemoteInfo
+		var err error
+		if app.RemoteInfo != nil {
+			ri = app.RemoteInfo
+		} else {
+			ri, err = GitFindRemoteInfo(app.CreateGitArgs())
+			if err != nil {
+				return "", err
+			}
 		}
-		path := strings.Trim(strings.Replace(app.Filepath, app.RepoPath, "", 1), "/")
 		return buildLineLink(
 			ri,
-			sha,
-			path,
+			id,
+			c.Filename,
 			app.CursorPosition+1,
 		)
 	} else if command == CommitLinkCommand {
-		sha := app.CurrentBlame.LineChunkMap[app.CursorPosition].CommitSha
-		if sha == NotCommittedId {
+		id := app.CurrentBlame.LineToChunkMap[app.CursorPosition].CommitId
+		if id == NotCommittedId {
 			return "", fmt.Errorf("Cannot produce a remote link for the selected line because it's not committed")
 		}
-		ri, err := FindRemoteInfo(app)
-		if err != nil {
-			return "", err
+		var ri *RemoteInfo
+		var err error
+		if app.RemoteInfo != nil {
+			ri = app.RemoteInfo
+		} else {
+			ri, err = GitFindRemoteInfo(app.CreateGitArgs())
+			if err != nil {
+				return "", err
+			}
 		}
-		return buildCommitLink(ri, sha)
+		return buildCommitLink(ri, id)
 	} else {
 		return "", fmt.Errorf("Unknown command: %s", command)
 	}
 }
 
-func TViewInit(app *Application) error {
+func TViewInit(app *Application, filenameArg string) error {
 	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
 	tview.Styles.PrimaryTextColor = tcell.ColorDefault
 
@@ -286,8 +306,8 @@ func TViewInit(app *Application) error {
 			UnhighlighCell(ui.Table.GetCell(app.CursorPosition, 4))
 			app.CursorPosition = row
 
-			c := app.CurrentBlame.LineChunkMap[row]
-			if c.CommitSha != NotCommittedId {
+			c := app.CurrentBlame.LineToChunkMap[row]
+			if c.CommitId != NotCommittedId {
 				details := fmt.Sprintf(
 					"[white:blue:b]Date[-:-:-] %s [white:blue:b]Author[-:-:-] %s",
 					time.Unix(c.AuthorTime, 0).UTC().Format("2006/01/02 15:04 MST"),
@@ -309,42 +329,71 @@ func TViewInit(app *Application) error {
 				tApp.Stop()
 				return nil
 			} else if r == 104 { // h key
-				c := app.CurrentBlame.LineChunkMap[app.CursorPosition]
-				if c.Previous == "" {
+				c := app.CurrentBlame.LineToChunkMap[app.CursorPosition]
+				if c.PreviousCommitId == "" {
 					setErrorMessage(
 						app,
 						fmt.Sprintf(
 							"Can't go back because %s is the commit that added this file.",
-							firstN(c.CommitSha, DisplayShaLimit, false),
+							firstN(c.CommitId, DisplayCommitIdLimit, false),
 						),
 					)
 					return nil
 				}
-				app.CurrentSha = c.Previous
-				app.ShaHistory = append(app.ShaHistory, c.Previous)
-				err := populateContent(app)
+				blame, err := GitBlame(
+					app.CreateGitArgs(),
+					c.PreviousCommitId,
+					c.PreviousFilename,
+				)
 				if err != nil {
 					setErrorMessage(app, fmt.Sprintf("%s", err))
+					return nil
 				}
+				RenderBlameView(app, blame)
+				historyItem := &HistoryItem{
+					CommitId:       app.CurrentCommitId,
+					CursorPosition: app.CursorPosition,
+					Filename:       c.Filename,
+				}
+				app.History = append(app.History, historyItem)
+				app.CurrentCommitId = c.PreviousCommitId
+				app.CurrentBlame = blame
+				newPos := app.CursorPosition
+				if len(blame.Lines) <= newPos {
+					newPos = len(blame.Lines) - 1
+				}
+				ui.Table.Select(newPos, 0)
 				return nil
 			} else if r == 108 { // l key
-				historyLen := len(app.ShaHistory)
+				historyLen := len(app.History)
 				if historyLen == 0 {
 					setErrorMessage(app, "You are on the latest revision of this file.")
 					return nil
 				}
-				app.ShaHistory[historyLen-1] = ""
-				app.ShaHistory = app.ShaHistory[:historyLen-1]
-				historyLen--
-				if historyLen == 0 {
-					app.CurrentSha = ""
-				} else {
-					app.CurrentSha = app.ShaHistory[historyLen-1]
-				}
-				err := populateContent(app)
+
+				historyItem := app.History[historyLen-1]
+				commitId := historyItem.CommitId
+				filename := historyItem.Filename
+				newPos := historyItem.CursorPosition
+
+				blame, err := GitBlame(
+					app.CreateGitArgs(),
+					commitId,
+					filename,
+				)
 				if err != nil {
 					setErrorMessage(app, fmt.Sprintf("%s", err))
+					return nil
 				}
+
+				app.History[historyLen-1] = nil
+				app.History = app.History[:historyLen-1]
+				historyLen--
+
+				RenderBlameView(app, blame)
+				app.CurrentCommitId = commitId
+				app.CurrentBlame = blame
+				ui.Table.Select(newPos, 0)
 				return nil
 			} else if app.SearchTerm != "" && (r == 78 || r == 110) { // n or N (shift+n) key
 				reverse := r == 78
@@ -418,10 +467,13 @@ func TViewInit(app *Application) error {
 	ui.BottomBar.
 		SetDynamicColors(true)
 
-	err := populateContent(app)
+	blame, err := GitBlame(app.CreateGitArgs(), "", filenameArg)
 	if err != nil {
 		return err
 	}
+	RenderBlameView(app, blame)
+	app.CurrentBlame = blame
+	ui.Table.Select(0, 0)
 
 	tApp.SetRoot(ui.Grid, true)
 	err = tApp.Run()
@@ -454,7 +506,12 @@ func run() int {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	repo, err := FindRepoFromPath(ctx, gitBin, filepath.Dir(fp))
+	gitArgs := &GitCommandArgs{
+		Context:       ctx,
+		GitBinaryPath: gitBin,
+		RepoPath:      filepath.Dir(fp),
+	}
+	repo, err := GitAttemptRepoLookup(gitArgs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, fmt.Errorf("bgb: %s", err))
 		return 1
@@ -470,15 +527,14 @@ func run() int {
 		cancel()
 	}()
 	app := Application{
-		GitBin:         gitBin,
-		Ctx:            ctx,
-		Filepath:       fp,
-		RepoPath:       repo,
-		CurrentSha:     "",
-		CursorPosition: 0,
-		TViewApp:       tApp,
+		GitBin:          gitBin,
+		Context:         ctx,
+		RepoPath:        repo,
+		CurrentCommitId: "",
+		CursorPosition:  0,
+		TViewApp:        tApp,
 	}
-	if err = TViewInit(&app); err != nil {
+	if err = TViewInit(&app, fp); err != nil {
 		fmt.Printf("%s\n", err)
 		return 1
 	}
