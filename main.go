@@ -291,12 +291,12 @@ func TViewInit(app *Application) error {
 			c := app.CurrentBlame.LineChunkMap[row]
 			if c.CommitSha != NotCommittedId {
 				details := fmt.Sprintf(
-					"Date: %s, Author: %s",
+					"[white:blue:b]Date[-:-:-] %s [white:blue:b]Author[-:-:-] %s",
 					time.Unix(c.AuthorTime, 0).UTC().Format("2006/01/02 15:04 MST"),
-					c.Author,
+					tview.Escape(c.Author),
 				)
 				if len(c.Summary) > DisplayMessageLengthLimit {
-					details += fmt.Sprintf(", Message: %s", c.Summary)
+					details += fmt.Sprintf(" [white:blue:b]Message[-:-:-] %s", tview.Escape(c.Summary))
 				}
 				setMessage(app, details)
 			} else {
@@ -416,6 +416,9 @@ func TViewInit(app *Application) error {
 				ui.InputBar.SetText("")
 			}
 		})
+
+	ui.BottomBar.
+		SetDynamicColors(true)
 
 	err := populateContent(app)
 	if err != nil {
