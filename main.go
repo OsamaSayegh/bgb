@@ -31,7 +31,8 @@ const (
 	CommitLinkCommand = "cl"
 )
 
-const Version = "0.0.1"
+// this variable is set at compile time by the Makefile
+var Version string
 
 type Application struct {
 	Context         context.Context
