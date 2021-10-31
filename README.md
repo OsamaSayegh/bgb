@@ -4,11 +4,18 @@
 
 ## Installation
 
-(todo)
+Download a binary that suits your OS/architecture from the [Releases](https://github.com/OsamaSayegh/bgb/releases) page of this repository and put the binary somewhere on your `$PATH`.
+
+Here's an example that installs `bgb` version 0.0.2 for linux and amd64 architecture using `wget`:
+
+```
+wget https://github.com/OsamaSayegh/bgb/releases/download/v0.0.2/bgb-linux-amd64
+sudo cp bgb-linux-amd64 /usr/bin/bgb
+```
 
 ## Usage
 
-After installing the `bgb` binary somewhere on your `$PATH`, call the program like this:
+After installing `bgb`, call the program like this:
 
 ```
 bgb <FILE>
@@ -36,4 +43,23 @@ Keys | Function
 
 ## Development
 
-(todo)
+1) Clone this repository:
+```
+git clone https://github.com/OsamaSayegh/bgb.git
+```
+
+2) Make your changes
+3) Run `make` to compile the program with your changes. `make` writes the binaries to a `_dist` directory
+4) Test the compiled binaries
+5) Run `make format` to format the source files
+6) Commit & push
+
+## Cutting a New Release
+
+(You need to have push access to this repository to complete these instructions)
+
+1) Make sure the `main` branch is checked out and there are no uncommitted changes (use `git status`)
+2) Bump the `VERSION` variable at the top of the `Makefile`
+3) Follow the steps in the Development section above to commit the version bump change
+4) Run `make release`
+5) On GitHub, go to the [Releases](https://github.com/OsamaSayegh/bgb/releases) page and create a new release for the new version and attach the binaries in the `_dist` directory with the release.
