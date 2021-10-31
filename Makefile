@@ -1,4 +1,4 @@
-VERSION := "v0.0.1"
+VERSION := "v0.0.2"
 BUILD_VERSION := $(VERSION)-$(shell git rev-parse --short HEAD)
 DIRTY_LINES=$(shell git status --porcelain)
 
